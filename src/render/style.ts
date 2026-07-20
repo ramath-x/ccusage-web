@@ -104,6 +104,47 @@ button {
 button:hover { filter: brightness(1.06); }
 button[disabled] { opacity: .6; cursor: progress; }
 
+/* ลิงก์ที่หน้าตาเป็นปุ่ม (ทางออกของ empty state) */
+a.btn {
+	display: inline-block;
+	text-decoration: none;
+	border-radius: 8px;
+	border: 1px solid var(--accent);
+	background: var(--accent);
+	color: #fff;
+	padding: 8px 16px;
+	box-shadow: var(--shadow);
+}
+a.btn:hover { filter: brightness(1.06); }
+
+.head-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: flex-end; }
+
+/* toggle ขอบเขต — เป็นลิงก์จริง (back/forward + bookmark ใช้ได้) แต่หน้าตาเป็นปุ่มคู่ */
+.scope-toggle {
+	display: inline-flex;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	overflow: hidden;
+	background: var(--surface);
+}
+.scope-toggle .toggle-item {
+	padding: 8px 14px;
+	font-size: 13px;
+	text-decoration: none;
+	color: var(--muted);
+	background: var(--surface);
+	/* ชื่อโปรเจกต์ยาวได้ — ตัดด้วย ellipsis ไม่ให้ดันหน้าจน scroll แนวนอน */
+	max-width: 260px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.scope-toggle .toggle-item + .toggle-item { border-left: 1px solid var(--border); }
+.scope-toggle .toggle-item:hover { background: var(--surface-2); color: var(--text); }
+.scope-toggle .toggle-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+.empty-state a.btn { margin-top: 4px; }
+
 .card, section.panel {
 	background: var(--surface);
 	border: 1px solid var(--border);
@@ -155,6 +196,16 @@ section.panel > h2 { display: flex; flex-wrap: wrap; gap: 8px; align-items: base
 /* กล่อง scroll ของตาราง — จุดเดียวในหน้าที่อนุญาตให้เลื่อนแนวนอนได้ */
 .table-wrap { overflow-x: auto; }
 
+/*
+ * ตารางยาว (session / unmapped) ต้องเลื่อนในกล่องตัวเอง ห้ามดันหน้าให้ยาวจนกลบ section อื่น
+ *
+ * ที่มาของ 460px: วัดจาก CSS ในไฟล์นี้ — แถวหนึ่ง = padding 7px×2 + line-height 1.55×14px ≈ 36px
+ * และหัวตาราง ≈ 30px  →  460px ≈ หัว + 12 แถว ซึ่งเป็นจำนวนที่ยัง "กวาดตาดูรวมๆ" ได้ในจอเดียว
+ * ก่อนหน้านี้ข้อมูลจริง 136 แถว = สูงราว 4,900px กลบทั้งตารางโมเดลและถัง unmapped ที่อยู่ถัดลงไป
+ * หัวตารางเป็น sticky อยู่แล้ว จึงยังอ่านชื่อคอลัมน์ได้ตลอดตอนเลื่อน
+ */
+.table-wrap.tall { max-height: 460px; overflow-y: auto; }
+
 table { border-collapse: collapse; width: 100%; font-size: 14px; }
 th, td { padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
 thead th {
@@ -169,6 +220,11 @@ thead th {
 }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover td { background: var(--surface-2); }
+
+/* แถวโปรเจกต์ = drill-in ได้ทั้งแถว (ลิงก์จริงอยู่ในช่องแรก JS แค่ขยายพื้นที่คลิก) */
+tbody tr.row-link { cursor: pointer; }
+tbody tr.row-link a { color: inherit; text-decoration: none; }
+tbody tr.row-link:hover a { color: var(--accent); text-decoration: underline; }
 
 /* ตัวเลขชิดขวา + ความกว้างหลักคงที่ ให้ไล่สายตาเทียบกันได้ (PLAN §4.5) */
 .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -186,6 +242,8 @@ svg.chart { display: block; min-width: 520px; }
 svg.chart text { fill: var(--muted); font-size: 11px; }
 svg.chart .grid { stroke: var(--border); stroke-width: 1; }
 svg.chart .axis { stroke: var(--border); stroke-width: 1; }
+/* เส้นประคั่นช่วงที่ไม่มีการใช้งาน — ต้องเห็นว่าวันไม่ต่อกัน แต่ต้องไม่เด่นกว่าตัวแท่ง */
+svg.chart .gap { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; opacity: .55; }
 
 footer {
 	margin-top: 28px;

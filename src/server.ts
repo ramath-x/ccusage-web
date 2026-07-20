@@ -9,7 +9,8 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { renderPage, type PageData } from './render/page.js';
+import { renderPage } from './render/page.js';
+import { buildPayload, buildView, resolveScope, type Snapshot } from './snapshot.js';
 
 /**
  * bind แค่ 127.0.0.1 เท่านั้น — **ห้าม 0.0.0.0** (PLAN §4.4)
@@ -32,11 +33,11 @@ export class ServerStartError extends Error {
 }
 
 /** ฟังก์ชันเก็บข้อมูลใหม่หนึ่งรอบ — ส่งเข้ามาจาก cli.ts */
-export type SnapshotCollector = () => Promise<PageData>;
+export type SnapshotCollector = () => Promise<Snapshot>;
 
 export interface ServerOptions {
 	/** snapshot แรกที่เก็บมาแล้วก่อนเปิด server (ผู้ใช้จะได้ไม่เจอหน้าเปล่าตอนเปิดครั้งแรก) */
-	initial: PageData;
+	initial: Snapshot;
 	collect: SnapshotCollector;
 	/** 0 = ให้ OS เลือก port ว่างให้ */
 	port?: number;
@@ -58,24 +59,24 @@ export interface RunningServer {
  * อยู่ดีเพราะอ่านข้อมูลชุดเดียวกัน — คนกดที่สองถึงสิบจึงควร "รอผลของคนแรก" ไม่ใช่เริ่มรอบใหม่
  */
 export class SnapshotStore {
-	private current: PageData;
-	private inflight?: Promise<PageData>;
+	private current: Snapshot;
+	private inflight?: Promise<Snapshot>;
 
 	constructor(
-		initial: PageData,
+		initial: Snapshot,
 		private readonly collector: SnapshotCollector,
 	) {
 		this.current = initial;
 	}
 
-	get(): PageData {
+	get(): Snapshot {
 		return this.current;
 	}
 
-	async refresh(): Promise<PageData> {
+	async refresh(): Promise<Snapshot> {
 		if (this.inflight) return this.inflight;
 
-		const run = (async (): Promise<PageData> => {
+		const run = (async (): Promise<Snapshot> => {
 			try {
 				const next = await this.collector();
 				this.current = next;
@@ -161,10 +162,21 @@ function errorMessage(err: unknown): string {
 export function createRequestHandler(store: SnapshotStore): http.RequestListener {
 	return (req, res) => {
 		const method = req.method ?? 'GET';
-		// URL ดิบอาจมี query string ติดมา — เราสนใจแค่ pathname
-		const pathname = new URL(req.url ?? '/', `http://${HOST}`).pathname;
+		const url = new URL(req.url ?? '/', `http://${HOST}`);
+		const pathname = url.pathname;
 		const headOnly = method === 'HEAD';
 		const isRead = method === 'GET' || headOnly;
+
+		/**
+		 * ประกอบมุมมองจาก snapshot ที่มีอยู่ + scope ที่ URL ขอ
+		 *
+		 * ⭐ หัวใจของ M4: การสลับ scope จบตรงนี้ทั้งหมด **ไม่มีการเรียก collector**
+		 * (collector = ตัวเดียวที่ spawn ccusage) จึงเป็นไปไม่ได้ที่การกด toggle จะยิง ccusage ใหม่
+		 */
+		const viewFor = (): ReturnType<typeof buildView> => {
+			const snapshot = store.get();
+			return buildView(snapshot, resolveScope(url.searchParams, snapshot));
+		};
 
 		if (pathname === '/' || pathname === '/index.html') {
 			if (!isRead) {
@@ -173,7 +185,7 @@ export function createRequestHandler(store: SnapshotStore): http.RequestListener
 				return;
 			}
 			try {
-				sendHtml(res, 200, renderPage(store.get()), headOnly);
+				sendHtml(res, 200, renderPage(viewFor()), headOnly);
 			} catch (err) {
 				// หน้าเว็บพังไม่ควรทำให้ process ตาย — คืน 500 ที่อ่านรู้เรื่องแล้วให้ผู้ใช้กด Refresh ต่อได้
 				sendText(res, 500, `เรนเดอร์หน้าเว็บไม่สำเร็จ: ${errorMessage(err)}\n`, headOnly);
@@ -187,25 +199,9 @@ export function createRequestHandler(store: SnapshotStore): http.RequestListener
 				sendText(res, 405, `method ${method} ใช้กับ ${pathname} ไม่ได้ — รองรับแค่ GET/HEAD\n`);
 				return;
 			}
-			const snapshot = store.get();
-			sendJson(
-				res,
-				200,
-				{
-					report: snapshot.report,
-					daily: snapshot.daily,
-					meta: {
-						binary: snapshot.binary,
-						collectedAt: snapshot.collectedAt,
-						usedOfflineFallback: snapshot.usedOfflineFallback,
-						offlineRequested: snapshot.offlineRequested,
-						...(snapshot.lastRefreshError !== undefined
-							? { lastRefreshError: snapshot.lastRefreshError }
-							: {}),
-					},
-				},
-				headOnly,
-			);
+			// รับ ?scope= / ?project= เหมือนหน้าเว็บ เพื่อให้ JSON กับหน้าที่ผู้ใช้กำลังดูตรงกันเสมอ
+			// และคืน **โครงเดียวกับ `ccusage-web --json`** เป๊ะ (ดูเหตุผลการเลือกโครงที่ buildPayload)
+			sendJson(res, 200, buildPayload(viewFor()), headOnly);
 			return;
 		}
 
@@ -220,14 +216,19 @@ export function createRequestHandler(store: SnapshotStore): http.RequestListener
 				.refresh()
 				.then((snapshot) => {
 					store.clearRefreshError();
+					// ตั้งชื่อ key ด้วยคำว่า raw* ให้ชัดว่าเป็นยอด**ทั้งเครื่องก่อนกรอง scope**
+					// ไม่ใช่ยอดของหน้าที่ผู้ใช้กำลังดู — คำตอบของ refresh ไม่ผูกกับ scope ใด scope หนึ่ง
 					sendJson(
 						res,
 						200,
 						{
 							ok: true,
 							collectedAt: snapshot.collectedAt,
-							totalCost: snapshot.report.totals.totalCost,
-							sessionCount: snapshot.report.meta.rawSessionCount,
+							rawSessionCount: snapshot.sessionRows.length,
+							rawTotalCost: snapshot.sessionRows.reduce(
+								(sum, row) => sum + (typeof row.totalCost === 'number' ? row.totalCost : 0),
+								0,
+							),
 						},
 						headOnly,
 					);

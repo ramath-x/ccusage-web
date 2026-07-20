@@ -10,10 +10,9 @@
 import { parseArgs } from 'node:util';
 import { collect, CcusageRunError, CcusageSchemaError, DEFAULT_TIMEOUT_MS, type CollectOptions } from './ccusage.js';
 import { buildProjectIndex } from './projects.js';
-import { buildReport } from './report.js';
 import { startServer, ServerStartError } from './server.js';
 import { openBrowser } from './open.js';
-import type { PageData } from './render/page.js';
+import { buildPayload, buildView, type ScopeInput, type Snapshot } from './snapshot.js';
 
 const HELP = `ccusage-web — ดู usage/cost ของ coding agent CLI เป็นหน้าเว็บ
 
@@ -66,21 +65,25 @@ function parseTimeout(raw: string): number {
  */
 async function collectSnapshot(
 	collectOptions: CollectOptions,
-	scope: { mode: 'all' } | { mode: 'project'; targetPath: string },
+	scope: ScopeInput,
+	projectTogglePath: string,
 	offlineRequested: boolean,
-): Promise<PageData> {
+): Promise<Snapshot> {
 	const result = await collect(collectOptions);
 	const index = await buildProjectIndex();
-	const report = buildReport(result.report.session, index, { scope });
 
+	// ⚠️ ห้าม buildReport ตรงนี้: report ผูกกับ scope ซึ่งเปลี่ยนได้ทุก request หลังจากนี้ (M4)
+	// snapshot เก็บได้แต่ "วัตถุดิบ" เท่านั้น การจัดกลุ่มไปทำที่ buildView
 	return {
-		report,
-		daily: result.report.daily,
 		sessionRows: result.report.session,
+		daily: result.report.daily,
+		index,
 		binary: result.binary,
 		usedOfflineFallback: result.usedOfflineFallback,
 		offlineRequested,
 		collectedAt: new Date().toISOString(),
+		defaultScope: scope,
+		projectTogglePath,
 	};
 }
 
@@ -139,15 +142,20 @@ async function main(): Promise<number> {
 	};
 
 	// default = โฟลเดอร์ปัจจุบัน เพราะ use case หลักคือ "cd เข้ามาแล้วอยากรู้ว่าโปรเจกต์นี้กินไปเท่าไหร่"
-	const scope = opts.all
-		? ({ mode: 'all' } as const)
-		: ({ mode: 'project', targetPath: opts.project ?? process.cwd() } as const);
+	const scope: ScopeInput = opts.all
+		? { mode: 'all' }
+		: { mode: 'project', targetPath: opts.project ?? process.cwd() };
 
-	const snapshot = await collectSnapshot(collectOptions, scope, opts.offline);
-	const { report } = snapshot;
+	// ปุ่ม "โปรเจกต์" บนหน้าเว็บต้องมีปลายทางเสมอ แม้ผู้ใช้สั่ง --all (defaultScope ไม่มี path ให้)
+	const projectTogglePath = opts.project ?? process.cwd();
+
+	const snapshot = await collectSnapshot(collectOptions, scope, projectTogglePath, opts.offline);
+	const view = buildView(snapshot, scope);
+	const { report } = view;
 
 	if (opts.json) {
-		process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+		// โครงเดียวกับ GET /api/report เป๊ะ — ผู้ใช้เขียนสคริปต์อ่านที่เดียวใช้ได้ทั้งสองทาง
+		process.stdout.write(JSON.stringify(buildPayload(view), null, 2) + '\n');
 
 		// เขียนลง stderr เพื่อไม่ให้ปนกับ JSON ตอน redirect เข้าไฟล์
 		if (!report.scope.matched) {
@@ -168,7 +176,7 @@ async function main(): Promise<number> {
 	const running = await startServer({
 		initial: snapshot,
 		...(port !== undefined ? { port } : {}),
-		collect: () => collectSnapshot(collectOptions, scope, opts.offline),
+		collect: () => collectSnapshot(collectOptions, scope, projectTogglePath, opts.offline),
 	});
 
 	// เตือนเรื่องราคา cache ตั้งแต่ในเทอร์มินัลด้วย ไม่ใช่แค่ banner บนหน้าเว็บ —

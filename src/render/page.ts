@@ -8,6 +8,9 @@
 
 import type { UsageRow } from '../ccusage.js';
 import type { Report, ReportSession } from '../report.js';
+// import type เท่านั้น — snapshot.ts import PageData กลับมาที่ไฟล์นี้ ถ้าเป็น import ปกติจะเป็น
+// วงจร runtime; `import type` ถูกลบทิ้งตอน compile จึงไม่มีวงจรจริงเหลืออยู่
+import type { ScopeLinks } from '../snapshot.js';
 import { renderDailyChart } from './chart.js';
 import { compactTokens, escapeHtml, money, timeTag, tokens } from './html.js';
 import { CSS } from './style.js';
@@ -43,6 +46,11 @@ export interface PageData {
 	/** true = ผู้ใช้สั่ง --offline เอง (ไม่ใช่ระบบถอยให้) */
 	offlineRequested: boolean;
 	collectedAt: string;
+	/**
+	 * ลิงก์สลับ scope — ไม่ใส่ = ไม่ต้องวาดปุ่ม toggle (เช่นเทสที่สนใจแค่ตาราง)
+	 * เป็นลิงก์จริงไม่ใช่ JS เพื่อให้สลับได้แม้ปิด JS และให้กด "เปิดในแท็บใหม่" ได้
+	 */
+	scopeLinks?: ScopeLinks;
 	/** error ของการ Refresh ครั้งล่าสุด — snapshot เดิมยังโชว์อยู่ แต่ต้องบอกผู้ใช้ว่าข้อมูลเก่า */
 	lastRefreshError?: string;
 }
@@ -121,11 +129,28 @@ function scopeTitle(report: Report): string {
 	return report.scope.resolvedPath ?? report.scope.requestedPath ?? '(ไม่ทราบ path)';
 }
 
-/** ช่วงวันที่จากแถวรายวัน — ไม่มีข้อมูลก็บอกตรงๆ ไม่ต้องเดา */
-function dateRangeText(daily: UsageRow[]): string {
-	const periods = daily.map((row) => row.period).filter((p): p is string => typeof p === 'string').sort();
-	const first = periods[0];
-	const last = periods[periods.length - 1];
+/**
+ * ช่วงวันที่ของข้อมูล **ในขอบเขตที่กำลังดู**
+ *
+ * ทำไมไม่ใช้แถว daily ตรงๆ ทุกโหมด: daily เป็นยอดทั้งเครื่องเสมอ (PLAN §2 ข้อ 2)
+ * พอผู้ใช้ดูเจาะโปรเจกต์ที่เพิ่งเริ่มเดือนนี้ header จะยังขึ้น "2026-03-04 → 2026-07-20"
+ * ซึ่งเป็นช่วงของโปรเจกต์อื่น = การ์ดกับหัวข้อคนละ population กัน
+ * โหมด project จึงคำนวณจาก lastActivity ของ session ที่อยู่ในขอบเขตจริงแทน
+ */
+function dateRangeText(report: Report, daily: UsageRow[]): string {
+	const periods =
+		report.scope.mode === 'all'
+			? daily.map((row) => row.period).filter((p): p is string => typeof p === 'string')
+			: report.projects.flatMap((project) =>
+					project.sessions
+						.map((session) => session.lastActivity)
+						.filter((value): value is string => typeof value === 'string')
+						.map((value) => value.slice(0, 10)),
+				);
+
+	const sorted = [...periods].sort();
+	const first = sorted[0];
+	const last = sorted[sorted.length - 1];
 	if (!first || !last) return 'ไม่มีข้อมูลในช่วงที่เลือก';
 	return first === last ? first : `${first} → ${last}`;
 }
@@ -161,13 +186,8 @@ function renderBanners(data: PageData): string {
 		);
 	}
 
-	if (report.scope.mode === 'project' && !report.scope.matched) {
-		banners.push(
-			`<div class="banner">ยังไม่มีข้อมูล usage ของ <code>${escapeHtml(report.scope.resolvedPath ?? '')}</code> — ` +
-				`โฟลเดอร์นี้อาจยังไม่เคยใช้ Claude Code<br>` +
-				`ดูทั้งเครื่องแทนได้ด้วยการรัน <code>ccusage-web --all</code></div>`,
-		);
-	}
+	// ⚠️ ไม่มี banner สำหรับเคส "หาโปรเจกต์ไม่เจอ" ตรงนี้โดยตั้งใจ — renderEmptyState() ทำหน้าที่นั้นแทน
+	// (เคยมีทั้งสองอันแล้วหน้าขึ้นข้อความเดียวกันซ้อนกันสองบล็อกติดกัน อ่านแล้วสับสนว่าเป็นคนละปัญหา)
 
 	const trustIssues = report.projects.filter((project) => !project.pathTrusted);
 	if (trustIssues.length > 0) {
@@ -253,15 +273,53 @@ function renderChartSection(data: PageData): string {
 			? '<span class="badge warn">ทั้งเครื่อง — ccusage ไม่ได้แยกยอดรายวันต่อโปรเจกต์</span>'
 			: '';
 
-	const hidden =
-		chart.hiddenDays > 0
-			? `<p class="muted" style="margin-top:8px">แสดง ${tokens(data.daily.length - chart.hiddenDays)} วันล่าสุด ` +
-				`(ซ่อนไว้อีก ${tokens(chart.hiddenDays)} วัน)</p>`
-			: '';
+	/**
+	 * คำอธิบายใต้กราฟ — **ต้องบอกเสมอว่าที่เห็นคือช่วงไหนและวันว่างหายไปไหน**
+	 *
+	 * เพราะกราฟวาดเฉพาะวันที่มีการใช้งาน (ccusage คืนมาแค่นั้น) แท่งจึงชิดกันหมด
+	 * ผู้ใช้ที่ไม่รู้จะอ่านว่า "ใช้ทุกวันต่อเนื่อง" ทั้งที่จริงเว้นไปเป็นเดือน
+	 */
+	const notes: string[] = [];
+	if (chart.shownDays > 0 && chart.firstPeriod && chart.lastPeriod) {
+		notes.push(
+			`แสดง ${tokens(chart.shownDays)} วันที่มีการใช้งาน ช่วง ${escapeHtml(chart.firstPeriod)} → ${escapeHtml(chart.lastPeriod)}`,
+		);
+	}
+	if (chart.gapCount > 0) {
+		notes.push(
+			`เส้นประ = ช่วงที่ไม่ได้ใช้งาน (${tokens(chart.gapCount)} ช่วง รวม ${tokens(chart.gapDays)} วันที่ไม่มีข้อมูล จึงไม่มีแท่ง)`,
+		);
+	}
+	if (chart.hiddenDays > 0) {
+		notes.push(`ซ่อนวันที่เก่ากว่านี้อีก ${tokens(chart.hiddenDays)} วัน`);
+	}
+	const note = notes.length > 0 ? `<p class="muted" style="margin-top:8px">${notes.join(' · ')}</p>` : '';
 
 	return (
 		`<section class="panel"><h2>cost รายวัน ${scopeNote}</h2>` +
-		`<div class="chart-scroll">${chart.svg}</div>${legend}${hidden}</section>`
+		`<div class="chart-scroll">${chart.svg}</div>${legend}${note}</section>`
+	);
+}
+
+/**
+ * หน้าตอน cwd/path ที่ขอ ไม่ตรงกับโปรเจกต์ไหนเลย (PLAN §4.3 + M4)
+ *
+ * เป็น "ผลว่าง" ไม่ใช่ error — ยืนอยู่ในโฟลเดอร์ที่ไม่เคยเปิด agent เป็นเรื่องปกติมาก
+ * สิ่งที่ผู้ใช้ต้องการตรงนี้คือ **ทางออกที่กดได้ทันที** ไม่ใช่คำสั่งให้ไปพิมพ์ใหม่ในเทอร์มินัล
+ */
+function renderEmptyState(data: PageData): string {
+	const { report } = data;
+	if (report.scope.mode !== 'project' || report.scope.matched) return '';
+
+	const href = data.scopeLinks?.allHref ?? '/?scope=all';
+	return (
+		'<section class="panel empty-state"><h2>ยังไม่มีข้อมูลของโฟลเดอร์นี้</h2>' +
+		`<p><span class="mono">${escapeHtml(report.scope.resolvedPath ?? report.scope.requestedPath ?? '')}</span></p>` +
+		'<p class="muted">ไม่พบ session ของ Claude Code ที่ผูกกับ path นี้ — อาจเป็นเพราะยังไม่เคยใช้ agent ในโฟลเดอร์นี้ ' +
+		'หรือใช้ผ่าน agent ที่ระบุโปรเจกต์ไม่ได้ (ดูหัวข้อ "ระบุโปรเจกต์ไม่ได้" ด้านล่าง)</p>' +
+		`<p style="margin-top:12px"><a class="btn" href="${escapeHtml(href)}">ดูทั้งเครื่องแทน</a></p>` +
+		// บอกทางฝั่งเทอร์มินัลไว้ด้วย สำหรับคนที่เปิดหน้านี้ค้างแล้วอยากรันใหม่ให้ default เป็นทั้งเครื่อง
+		'<p class="muted" style="margin-top:8px">หรือรันใหม่ด้วย <code>ccusage-web --all</code></p></section>'
 	);
 }
 
@@ -276,9 +334,12 @@ function renderProjectsTable(report: Report): string {
 			const trust = project.pathTrusted
 				? ''
 				: ` <span class="badge warn" title="${escapeHtml(`ที่มาของ path: ${project.pathSource}`)}">path เดาจากชื่อโฟลเดอร์</span>`;
+			// drill-in (M4): เป็น <a> จริงเพื่อให้คลิกกลางเปิดแท็บใหม่ได้และใช้งานได้แม้ปิด JS
+			// (JS ทำแค่ขยายพื้นที่คลิกให้ทั้งแถว ดู INLINE_SCRIPT)
+			const href = `/?project=${encodeURIComponent(project.projectPath)}`;
 			return (
-				'<tr>' +
-				`<td class="wrap-cell"><span class="mono">${escapeHtml(project.projectPath)}</span>${trust}</td>` +
+				`<tr class="row-link" data-href="${escapeHtml(href)}">` +
+				`<td class="wrap-cell"><a class="mono" href="${escapeHtml(href)}">${escapeHtml(project.projectPath)}</a>${trust}</td>` +
 				`<td class="num">${tokens(project.sessionCount)}</td>` +
 				`<td>${escapeHtml(project.agents.join(', ') || '—')}</td>` +
 				`<td class="num">${tokens(project.totalTokens)}</td>` +
@@ -290,7 +351,8 @@ function renderProjectsTable(report: Report): string {
 		.join('');
 
 	return (
-		'<section class="panel"><h2>โปรเจกต์ <span class="badge">เรียงตาม cost มาก→น้อย</span></h2>' +
+		'<section class="panel"><h2>โปรเจกต์ <span class="badge">เรียงตาม cost มาก→น้อย</span>' +
+		'<span class="badge">คลิกแถวเพื่อเจาะดูเฉพาะโปรเจกต์นั้น</span></h2>' +
 		'<div class="table-wrap"><table><thead><tr>' +
 		'<th>โปรเจกต์</th><th class="num">session</th><th>agent</th><th class="num">token</th>' +
 		'<th class="num">cost</th><th>ใช้ล่าสุด</th>' +
@@ -343,9 +405,22 @@ function renderSessionsTable(report: Report): string {
 				`— ซ่อนไว้อีก ${tokens(hidden)} แถว (ดูครบได้ที่ <code>/api/report</code>)</p>`
 			: '';
 
+	/**
+	 * badge ต้องบอกให้ชัดว่านับ population ไหน
+	 *
+	 * ตารางนี้มีเฉพาะ session ที่ **ระบุโปรเจกต์ได้** ส่วนการ์ด "จำนวน session" ด้านบน
+	 * ในโหมดทั้งเครื่องรวม unmapped ด้วย (เพราะ cost ของมันถูกรวมใน totals) สองเลขจึงไม่เท่ากันโดยตั้งใจ
+	 * ถ้าไม่กำกับไว้ ผู้ใช้จะเห็น "155" กับ "136" ข้างกันแล้วสรุปว่าหน้านี้นับเลขไม่ตรง
+	 */
+	const badge =
+		report.scope.mode === 'all' && report.unmapped.sessionCount > 0
+			? `${all.length} รายการ (เฉพาะที่ระบุโปรเจกต์ได้)`
+			: `${all.length} รายการ`;
+
 	return (
-		`<section class="panel"><h2>session <span class="badge">${escapeHtml(`${all.length} รายการ`)}</span></h2>` +
-		'<div class="table-wrap"><table><thead><tr>' +
+		`<section class="panel"><h2>session <span class="badge">${escapeHtml(badge)}</span></h2>` +
+		// tall = จำกัดความสูงแล้วเลื่อนในกล่องตัวเอง ไม่ให้ตารางยาวกลบ section ที่เหลือทั้งหน้า
+		'<div class="table-wrap tall"><table><thead><tr>' +
 		'<th>ชื่อ session</th>' +
 		(report.scope.mode === 'all' ? '<th>โปรเจกต์</th>' : '') +
 		'<th>agent</th><th>model</th><th class="num">token</th><th class="num">cost</th><th>ใช้ล่าสุด</th>' +
@@ -416,10 +491,13 @@ function renderUnmapped(report: Report): string {
 		)
 		.join('');
 
+	// ถัง unmapped เป็นของ**ทั้งเครื่องเสมอ** (คำนวณก่อนกรอง scope) — ในโหมดเจาะโปรเจกต์
+	// ต้องบอกให้ชัด ไม่งั้นผู้ใช้จะนึกว่าเป็น session ที่หลุดจากโปรเจกต์ที่กำลังดูอยู่
 	const inTotals =
 		report.scope.mode === 'all'
 			? 'ยอดก้อนนี้ <strong>รวมอยู่</strong> ในการ์ด cost รวมด้านบนแล้ว'
-			: 'ยอดก้อนนี้ <strong>ไม่ได้รวม</strong> ในการ์ดด้านบน เพราะยืนยันไม่ได้ว่าเป็นของโปรเจกต์นี้';
+			: 'ยอดก้อนนี้เป็นของ <strong>ทั้งเครื่อง</strong> และ <strong>ไม่ได้รวม</strong> ในการ์ดด้านบน ' +
+				'เพราะยืนยันไม่ได้ว่า session เหล่านี้เป็นของโปรเจกต์ที่กำลังดูอยู่หรือไม่';
 
 	const note =
 		hidden > 0
@@ -453,6 +531,17 @@ document.querySelectorAll('time[datetime]').forEach(function (el) {
 	});
 });
 
+// ขยายพื้นที่คลิกของแถวโปรเจกต์ให้ทั้งแถว — ตัวลิงก์จริงอยู่ใน <a> ของช่องแรกอยู่แล้ว
+// ตรงนี้เป็นแค่ความสะดวก ปิด JS ก็ยัง drill-in ได้ผ่านลิงก์นั้น
+document.querySelectorAll('tr.row-link').forEach(function (tr) {
+	tr.addEventListener('click', function (ev) {
+		// ปล่อยให้ <a> ทำงานเองเวลาคลิกโดนลิงก์ตรงๆ (กันเปิดสองครั้ง / ไม่ทับ ctrl+click)
+		if (ev.target.closest('a')) return;
+		var href = tr.getAttribute('data-href');
+		if (href) location.href = href;
+	});
+});
+
 var btn = document.getElementById('refresh-btn');
 if (btn) {
 	btn.addEventListener('click', function () {
@@ -475,6 +564,29 @@ if (btn) {
 	});
 }
 `;
+
+/**
+ * ปุ่มสลับ project ↔ ทั้งเครื่อง (M4)
+ *
+ * เป็นลิงก์ธรรมดาไม่ใช่ปุ่ม JS โดยตั้งใจ: ทำให้ back/forward ของ browser ใช้ได้จริง,
+ * bookmark มุมมองที่ต้องการได้, และเปิดคนละแท็บเทียบสองขอบเขตพร้อมกันได้
+ * ฝั่ง server ตอบทั้งสอง URL จาก snapshot ก้อนเดิม จึงไม่มีการยิง ccusage ใหม่ตอนสลับ
+ */
+function renderScopeToggle(data: PageData): string {
+	const links = data.scopeLinks;
+	if (!links) return '';
+
+	const item = (href: string, label: string, active: boolean, title: string): string =>
+		`<a class="toggle-item${active ? ' active' : ''}" href="${escapeHtml(href)}" ` +
+		`title="${escapeHtml(title)}"${active ? ' aria-current="page"' : ''}>${escapeHtml(label)}</a>`;
+
+	return (
+		'<div class="scope-toggle" role="group" aria-label="เลือกขอบเขตข้อมูล">' +
+		item(links.projectHref, `โปรเจกต์: ${links.projectLabel}`, links.active === 'project', links.projectPath) +
+		item(links.allHref, 'ทั้งเครื่อง', links.active === 'all', 'ทุกโปรเจกต์ ทุก agent ในเครื่องนี้') +
+		'</div>'
+	);
+}
 
 export function renderPage(data: PageData): string {
 	const { report } = data;
@@ -501,15 +613,19 @@ export function renderPage(data: PageData): string {
 				${scopeBadge}
 				<span class="scope-path">${escapeHtml(scopeTitle(report))}</span>
 			</div>
-			<div class="meta">ช่วงข้อมูล: ${escapeHtml(dateRangeText(data.daily))}</div>
+			<div class="meta">ช่วงข้อมูล: ${escapeHtml(dateRangeText(report, data.daily))}</div>
 		</div>
-		<div style="text-align:right">
-			<button id="refresh-btn" type="button">Refresh</button>
-			<div class="meta" style="margin-top:6px">เก็บข้อมูลเมื่อ ${timeTag(data.collectedAt)}</div>
+		<div class="head-actions">
+			${renderScopeToggle(data)}
+			<div>
+				<button id="refresh-btn" type="button">Refresh</button>
+				<div class="meta" style="margin-top:6px">เก็บข้อมูลเมื่อ ${timeTag(data.collectedAt)}</div>
+			</div>
 		</div>
 	</header>
 
 	${renderBanners(data)}
+	${renderEmptyState(data)}
 	${renderCards(data)}
 	${renderChartSection(data)}
 	${renderProjectsTable(report)}

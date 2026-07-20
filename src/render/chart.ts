@@ -33,21 +33,68 @@ const PAD_RIGHT = 14;
 const PAD_TOP = 12;
 const PAD_BOTTOM = 38;
 
+/**
+ * ความสูงขั้นต่ำของแท่งที่มีค่ามากกว่า 0
+ *
+ * ที่มา: วัดจากข้อมูลจริงบนเครื่องนี้ (2026-07-20) — วันที่ถูกที่สุดคือ 2026-03-19 ที่ $0.10
+ * ส่วนวันแพงสุดคือ 2026-07-14 ที่ $251.28 ทำให้เพดานแกน y = $300
+ * แท่งของวัน $0.10 จึงสูง 0.10/300 × 210px (plot height) = **0.07px** = มองไม่เห็นเลย
+ * ผลคือแกน x ฝั่งซ้าย (10 วันของ gemini ช่วง มี.ค.) ดูเหมือน "ช่องว่างที่ไม่มีข้อมูล"
+ * ทั้งที่มีข้อมูลอยู่จริง — ซึ่งเป็นการโกหกด้วยภาพที่แย่กว่าการวาดแท่งเกินจริงนิดหน่อย
+ *
+ * เลือก 2px: 1px บนจอ HiDPI ถูก render จางจนกลืนกับเส้น grid, 2px คือค่าต่ำสุดที่ยังอ่านเป็นแท่งได้
+ * ส่วนความคลาดเคลื่อนที่แลกมา ≤2px จาก 210px (<1%) และมีตัวเลขจริงใน tooltip กำกับทุกแท่ง
+ */
+const MIN_BAR_PX = 2;
+
 export interface DailyChartResult {
 	svg: string;
 	/** ชื่อ agent → สี — เอาไปทำ legend นอก SVG (legend เป็น HTML จัดวางง่ายกว่า) */
 	colors: Array<{ agent: string; color: string }>;
 	/** จำนวนวันที่ถูกตัดทิ้งเพราะเกิน MAX_CHART_DAYS */
 	hiddenDays: number;
+	/** วันแรก/วันสุดท้ายที่วาดจริง — หน้าเว็บต้องบอกช่วงที่แสดงเสมอ ห้ามให้ผู้ใช้เดา */
+	firstPeriod?: string;
+	lastPeriod?: string;
+	/** จำนวนแท่งที่วาดจริง (= จำนวนวันที่มีการใช้งาน ไม่ใช่จำนวนวันตามปฏิทิน) */
+	shownDays: number;
+	/** จำนวนรอยต่อที่วันไม่ติดกัน และรวมแล้วเว้นว่างกี่วัน — ไว้เขียนคำอธิบายใต้กราฟ */
+	gapCount: number;
+	gapDays: number;
 }
 
-/** ปัดเพดานแกน y ขึ้นเป็นเลขกลมๆ เพื่อให้เส้น grid อ่านง่าย (ไม่ใช่ 37.418) */
+/**
+ * ปัดเพดานแกน y ขึ้นเป็นเลขกลมๆ เพื่อให้เส้น grid อ่านง่าย (ไม่ใช่ 37.418)
+ *
+ * ขั้นละเอียดกว่า 1/2/5/10 เพราะวัดจากข้อมูลจริงแล้วเจอปัญหา: ยอดสูงสุด $251.28
+ * ถูกปัดขึ้นเป็น $500 (normalized 2.51 → ขั้นถัดไปคือ 5) ทำให้แท่งที่สูงที่สุดในกราฟ
+ * ใช้พื้นที่แค่ครึ่งเดียวของความสูง และแท่งเล็กยิ่งจมหนักขึ้นไปอีก
+ * ขั้น 2.5/3/4 ทำให้ $251.28 → $300 = แท่งสูงสุดใช้พื้นที่ 84% ตัวเลขบนแกนยังกลมอ่านง่ายเหมือนเดิม
+ */
 function niceCeil(value: number): number {
 	if (value <= 0) return 1;
 	const magnitude = 10 ** Math.floor(Math.log10(value));
 	const normalized = value / magnitude;
-	const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+	const step = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].find((candidate) => normalized <= candidate) ?? 10;
 	return step * magnitude;
+}
+
+/**
+ * ระยะห่างเป็นจำนวนวันระหว่างสอง period แบบ `YYYY-MM-DD`
+ *
+ * คืน 1 เมื่ออ่านวันที่ไม่ออก (เช่น ccusage เปลี่ยนรูปแบบ period) — แปลว่า "ถือว่าติดกัน"
+ * ซึ่งทำให้ไม่มีเส้นประโผล่มั่ว ดีกว่าการเดาว่ามีช่องว่างแล้วแจ้งผู้ใช้ผิด
+ */
+function daysBetween(a: string, b: string): number {
+	const parse = (value: string): number => {
+		const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+		if (!m) return Number.NaN;
+		return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+	};
+	const from = parse(a);
+	const to = parse(b);
+	if (Number.isNaN(from) || Number.isNaN(to)) return 1;
+	return Math.round((to - from) / 86_400_000);
 }
 
 /** ยอดต่อ agent ของหนึ่งวัน — ใช้ `agents[]` ที่มาจาก --by-agent ถ้ามี ไม่มีก็นับทั้งวันเป็นก้อนเดียว */
@@ -79,7 +126,14 @@ export function renderDailyChart(dailyRows: UsageRow[]): DailyChartResult {
 	const rows = usable.slice(-MAX_CHART_DAYS);
 
 	if (rows.length === 0) {
-		return { svg: '<p class="empty">ไม่มีข้อมูลรายวันในช่วงที่เลือก</p>', colors: [], hiddenDays: 0 };
+		return {
+			svg: '<p class="empty">ไม่มีข้อมูลรายวันในช่วงที่เลือก</p>',
+			colors: [],
+			hiddenDays: 0,
+			shownDays: 0,
+			gapCount: 0,
+			gapDays: 0,
+		};
 	}
 
 	const perDay = rows.map((row) => ({ period: row.period, costs: costsByAgent(row) }));
@@ -120,17 +174,41 @@ export function renderDailyChart(dailyRows: UsageRow[]): DailyChartResult {
 		for (const agent of agentNames) {
 			const cost = day.costs.get(agent) ?? 0;
 			if (cost <= 0) continue;
-			const height = (cost / yMax) * plotHeight;
+			// ยกพื้นความสูงขั้นต่ำ เพื่อไม่ให้วันที่ยอดน้อยมากหายไปจนดูเหมือนไม่มีข้อมูล (ดู MIN_BAR_PX)
+			const height = Math.max((cost / yMax) * plotHeight, MIN_BAR_PX);
 			cursor -= height;
 			parts.push(
 				`<rect x="${x.toFixed(1)}" y="${cursor.toFixed(1)}" width="${barWidth.toFixed(1)}" ` +
-					`height="${Math.max(height, 0.6).toFixed(1)}" fill="${colorOf.get(agent)}" rx="2">` +
+					`height="${height.toFixed(1)}" fill="${colorOf.get(agent)}" rx="2">` +
 					// tooltip ของ browser เอง — ไม่ต้องเขียน JS tooltip ให้บวม
 					`<title>${escapeHtml(`${day.period} · ${agent} · ${money(cost)}`)}</title>` +
 					`</rect>`,
 			);
 		}
 	});
+
+	/**
+	 * เส้นประตรงรอยต่อที่วันไม่ติดกัน
+	 *
+	 * ccusage คืนเฉพาะวันที่มีการใช้งาน กราฟจึงวางแท่งชิดกันหมด ทำให้ 2026-03-27 กับ 2026-06-19
+	 * (ห่างกัน 84 วัน) ดูเหมือนเป็นวันติดกัน = อ่านกราฟผิดว่าใช้งานต่อเนื่องตลอด
+	 * ทางแก้แบบ "เติมวันว่างให้ครบปฏิทิน" ทำไม่ได้ในพื้นที่เท่านี้ (139 วันเปล่าจะเบียดจนแท่งจริงบางเป็นเส้น)
+	 * จึงใช้เส้นประคั่น + บอกจำนวนวันที่เว้นไว้ใน tooltip แทน
+	 */
+	let gapCount = 0;
+	let gapDays = 0;
+	for (let i = 1; i < perDay.length; i += 1) {
+		const diff = daysBetween(perDay[i - 1]!.period, perDay[i]!.period);
+		if (diff <= 1) continue;
+		gapCount += 1;
+		gapDays += diff - 1;
+		const x = PAD_LEFT + slot * i;
+		parts.push(
+			`<line class="gap" x1="${x.toFixed(1)}" y1="${PAD_TOP}" x2="${x.toFixed(1)}" y2="${PAD_TOP + plotHeight}">` +
+				`<title>${escapeHtml(`ไม่มีการใช้งาน ${diff - 1} วัน (${perDay[i - 1]!.period} → ${perDay[i]!.period})`)}</title>` +
+				`</line>`,
+		);
+	}
 
 	// ป้ายแกน x — โชว์ทุกๆ n วันเพื่อไม่ให้ตัวหนังสือทับกันตอนวันเยอะ
 	const labelEvery = Math.max(1, Math.ceil(rows.length / 12));
@@ -156,5 +234,10 @@ export function renderDailyChart(dailyRows: UsageRow[]): DailyChartResult {
 		svg,
 		colors: agentNames.map((agent) => ({ agent, color: colorOf.get(agent) as string })),
 		hiddenDays,
+		firstPeriod: perDay[0]!.period,
+		lastPeriod: perDay[perDay.length - 1]!.period,
+		shownDays: perDay.length,
+		gapCount,
+		gapDays,
 	};
 }
