@@ -17,8 +17,8 @@ npx ccusage-web --all    # ทั้งเครื่อง
 
 | Milestone | สถานะ |
 |---|---|
-| M0 Scaffold | 🚧 |
-| M1 Collector | ⬜ |
+| M0 Scaffold | ✅ |
+| M1 Collector | ✅ |
 | M2 Project index + join | ⬜ |
 | M3 Server + HTML | ⬜ |
 | M4 โหมดโปรเจกต์ | ⬜ |

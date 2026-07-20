@@ -1,0 +1,48 @@
+{
+  "name": "ccusage-web",
+  "version": "0.0.1",
+  "description": "ดู usage/cost ของ coding agent CLI เป็นหน้าเว็บ เสิร์ฟบน port ว่างอัตโนมัติ",
+  "type": "module",
+  "bin": {
+    "ccusage-web": "./dist/cli.js"
+  },
+  "main": "./dist/cli.js",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "pretest": "tsc",
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "ccusage",
+    "claude-code",
+    "usage",
+    "cost",
+    "dashboard",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "ramath-x",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ramath-x/ccusage-web.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ramath-x/ccusage-web/issues"
+  },
+  "homepage": "https://github.com/ramath-x/ccusage-web#readme",
+  "dependencies": {
+    "ccusage": "20.0.17"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "^5.6.0"
+  }
+}
