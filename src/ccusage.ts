@@ -110,7 +110,7 @@ export class CcusageSchemaError extends Error {
 	constructor(detail: string) {
 		super(
 			`ccusage schema เปลี่ยนไปจากที่รองรับ: ${detail}\n` +
-				`วิธีแก้: อัปเดต ccusage-dashboard เป็นเวอร์ชันล่าสุด (npm i -g ccusage-dashboard@latest)\n` +
+				`วิธีแก้: อัปเดต ccusage-dashboard เป็นเวอร์ชันล่าสุด (npm i -g @ramath/ccusage-dashboard@latest)\n` +
 				`ถ้ายังไม่หาย แจ้ง issue ที่ https://github.com/ramath-x/ccusage-web/issues พร้อมเวอร์ชัน ccusage ที่ใช้`,
 		);
 	}
@@ -221,7 +221,7 @@ function findBundledCcusage(): string | undefined {
  * 2. dependency ที่ pin มากับเรา — schema ตรงกับที่ test ไว้แน่นอน และไม่ต้องแตะเน็ต
  *    รันผ่าน `node <entry>` ตรงๆ ไม่พึ่ง shim ใน .bin เพราะ package manager บางตัว
  *    (pnpm/yarn PnP หรือกรณีเราเป็น transitive dep) ไม่ได้สร้าง shim ไว้ให้
- * 3. `npx -y ccusage@latest` — ทางสุดท้าย ช้าและต้องมีเน็ต แต่ทำให้ `npx ccusage-dashboard`
+ * 3. `npx -y ccusage@latest` — ทางสุดท้าย ช้าและต้องมีเน็ต แต่ทำให้ `npx @ramath/ccusage-dashboard`
  *    ยังทำงานได้แม้ dependency หายไป
  */
 export function resolveCcusageBinary(): BinarySpec {

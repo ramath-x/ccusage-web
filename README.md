@@ -4,7 +4,7 @@
 รันคำสั่งเดียว → เสิร์ฟ HTML บน **port ว่างอัตโนมัติ** → ดูได้ทั้งทีละโปรเจกต์และทั้งเครื่อง
 
 ```bash
-npx ccusage-dashboard
+npx @ramath/ccusage-dashboard
 ```
 
 ![หน้าดูทั้งเครื่อง](https://raw.githubusercontent.com/ramath-x/ccusage-web/main/docs/screenshot-all.png)
@@ -46,9 +46,9 @@ npx ccusage-dashboard
 
 ```bash
 cd ~/work/my-app
-npx ccusage-dashboard              # ดูเฉพาะโปรเจกต์นี้ + เปิด browser ให้อัตโนมัติ
-npx ccusage-dashboard --all        # ดูทั้งเครื่อง ทุกโปรเจกต์ ทุก agent
-npx ccusage-dashboard --json       # ไม่ยิง server — พ่น JSON ที่ join แล้วออก stdout
+npx @ramath/ccusage-dashboard              # ดูเฉพาะโปรเจกต์นี้ + เปิด browser ให้อัตโนมัติ
+npx @ramath/ccusage-dashboard --all        # ดูทั้งเครื่อง ทุกโปรเจกต์ ทุก agent
+npx @ramath/ccusage-dashboard --json       # ไม่ยิง server — พ่น JSON ที่ join แล้วออก stdout
 ```
 
 ปิดด้วย `Ctrl+C` — ไม่มี daemon ค้าง ไม่มีไฟล์ state ไม่มี DB อ่านสดทุกครั้ง

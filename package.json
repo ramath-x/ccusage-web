@@ -1,5 +1,5 @@
 {
-  "name": "ccusage-dashboard",
+  "name": "@ramath/ccusage-dashboard",
   "version": "0.1.0",
   "description": "ดู usage/cost ของ coding agent CLI เป็นหน้าเว็บ เสิร์ฟบน port ว่างอัตโนมัติ",
   "type": "module",
