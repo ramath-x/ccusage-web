@@ -214,7 +214,7 @@ function findBundledCcusage(): string | undefined {
 }
 
 /**
- * หา ccusage 3 ชั้นตามลำดับ — เรียงจาก "ตรงใจ user + เร็ว" ไป "ช้าและต้องมีเน็ต"
+ * หา ccusage ทุกชั้นที่ใช้ได้ เรียงจาก "ตรงใจ user + เร็ว" ไป "ช้าและต้องมีเน็ต"
  *
  * 1. PATH — ถ้า user ติดตั้ง ccusage เองไว้ ต้องเคารพเวอร์ชัน/config ของเขา
  *    ตัวเลขบนเว็บจะได้ตรงกับที่เขาเห็นตอนพิมพ์ `ccusage` เอง
@@ -223,28 +223,41 @@ function findBundledCcusage(): string | undefined {
  *    (pnpm/yarn PnP หรือกรณีเราเป็น transitive dep) ไม่ได้สร้าง shim ไว้ให้
  * 3. `npx -y ccusage@latest` — ทางสุดท้าย ช้าและต้องมีเน็ต แต่ทำให้ `npx @ramath/ccusage-dashboard`
  *    ยังทำงานได้แม้ dependency หายไป
+ *
+ * ทำไมคืน "ทุกชั้น" ไม่ใช่ตัวเดียว: บางชั้นเลือกได้แต่รันไม่ผ่าน (ดู CcusageBinaryPermissionError)
+ * collect() ต้องมีชั้นถัดไปให้ถอยไป ไม่ใช่ยอมแพ้ตั้งแต่ตัวแรกที่หาเจอ
  */
-export function resolveCcusageBinary(): BinarySpec {
+export function resolveCcusageBinaries(): BinarySpec[] {
+	const specs: BinarySpec[] = [];
+
 	const onPath = findOnPath('ccusage');
 	if (onPath) {
-		return { command: onPath, baseArgs: [], label: `PATH (${onPath})` };
+		specs.push({ command: onPath, baseArgs: [], label: `PATH (${onPath})` });
 	}
 
 	const bundled = findBundledCcusage();
 	if (bundled) {
 		// process.execPath = node ตัวที่กำลังรันอยู่ ไม่ใช่ `node` ใน PATH ซึ่งอาจคนละเวอร์ชัน
-		return {
+		specs.push({
 			command: process.execPath,
 			baseArgs: [bundled],
 			label: `bundled dependency (${bundled})`,
-		};
+		});
 	}
 
-	return {
+	specs.push({
 		command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
 		baseArgs: ['-y', 'ccusage@latest'],
 		label: 'npx -y ccusage@latest (fallback ช้า ต้องมีเน็ต)',
-	};
+	});
+
+	return specs;
+}
+
+/** ชั้นแรกที่จะถูกลอง — เก็บไว้เพื่อความเข้ากันได้กับตัวเรียกที่อยากรู้แค่ "ปกติจะใช้ตัวไหน" */
+export function resolveCcusageBinary(): BinarySpec {
+	// resolveCcusageBinaries() ใส่ชั้น npx ต่อท้ายเสมอ จึงไม่มีทางคืน array ว่าง
+	return resolveCcusageBinaries()[0]!;
 }
 
 /** ประกอบ flag ที่ส่งต่อไปให้ ccusage */
@@ -371,6 +384,71 @@ function looksLikeNetworkFailure(stderr: string): boolean {
 	].some((needle) => haystack.includes(needle));
 }
 
+/**
+ * ตรวจว่า error รอบนี้คือ "native binary ของ ccusage ไม่มีสิทธิ์รัน และ chmod แก้เองไม่ได้" หรือเปล่า
+ *
+ * ที่มาของเคสนี้ (ยืนยันจากเครื่องจริง ไม่ใช่การเดา):
+ * แพ็กเกจ `@ccusage/ccusage-<platform>` ส่ง native binary มาแบบไม่มีบิต execute (`-rw-r--r--`)
+ * ccusage จึงพยายาม `chmod +x` ให้ตัวเองตอน runtime — ซึ่งสำเร็จก็ต่อเมื่อไฟล์เป็นของผู้ใช้ที่รัน
+ *   • `npm i -g` ธรรมดา (prefix ใต้ home) → ไฟล์เป็นของ user → chmod ผ่าน → ใช้ได้
+ *   • `sudo npm i -g` (prefix /usr/local) → ไฟล์เป็นของ root แต่รันเป็น user → EPERM → ccusage exit 1
+ *
+ * คืน path ของไฟล์ที่มีปัญหาเมื่อ match (ดึงจาก stderr ตรงๆ ไม่เดาเอง) — ไม่ match คืน undefined
+ *
+ * ทำไมต้อง match ให้แคบขนาดนี้ แทนที่จะ fallback ทุก error:
+ * การถอยไปชั้นถัดไปคือการ spawn ccusage ใหม่อีกรอบ ซึ่งชั้นสุดท้ายเป็น `npx` ที่ต้องโหลดจากเน็ต
+ * ถ้าถอยมั่วเวลา user พิมพ์ flag ผิดหรือ log พัง เขาจะต้องรอเป็นสิบวินาทีกว่าจะเห็น error จริง
+ * เคสนี้ต่างจาก error อื่นตรงที่ "รู้แน่ว่าชั้นถัดไปจะแก้ได้": npx ติดตั้งลง ~/.npm/_npx ซึ่ง user
+ * เป็นเจ้าของ → chmod สำเร็จ → รันผ่าน การถอยจึงมีเหตุผล ไม่ใช่การลองซั่วๆ
+ */
+export function findInexecutableBinaryPath(stderr: string): string | undefined {
+	const haystack = stderr.toLowerCase();
+
+	// ต้องเป็นเรื่อง "สิทธิ์รันไฟล์" จริงๆ: ข้อความเฉพาะของ ccusage หรือ chmod ที่ล้มด้วย EPERM/EACCES
+	const isPermissionFailure =
+		haystack.includes('native binary is not executable') ||
+		(haystack.includes('chmod') && (haystack.includes('eperm') || haystack.includes('eacces')));
+	if (!isPermissionFailure) return undefined;
+
+	// path มาในเครื่องหมายคำพูดท้ายข้อความของ node fs error: `chmod '/path/to/bin'`
+	const quoted = /chmod\s+['"]([^'"]+)['"]/.exec(stderr) ?? /['"]([^'"]*ccusage[^'"]*)['"]/.exec(stderr);
+	const captured = quoted?.[1]?.trim();
+	if (captured) return captured;
+
+	// ไม่มี quote (ข้อความอาจเปลี่ยนรูปในอนาคต) — คว้า token ที่หน้าตาเป็น absolute path มาแทน
+	const bare = /(?:^|\s)((?:[A-Za-z]:\\|\/)\S+)/.exec(stderr);
+	return bare?.[1]?.replace(/[).,'"]+$/, '');
+}
+
+/**
+ * native binary ของ ccusage ไม่มีสิทธิ์รัน และเราแก้ให้เองไม่ได้ (ต้องใช้สิทธิ์ root)
+ *
+ * แยก class ออกมาเพราะวิธีแก้ต่างจาก run error อื่นสิ้นเชิง: ไม่ใช่ "ติดตั้ง ccusage"
+ * ไม่ใช่ "อัปเดต dashboard" แต่เป็น "ให้สิทธิ์รันไฟล์" หรือ "เลิกติดตั้งด้วย sudo"
+ * ข้อความจึงต้องแปะคำสั่งที่ก๊อปไปวางได้เลย พร้อม path จริงจาก stderr — ไม่ใช่ path ที่เราเดา
+ */
+export class CcusageBinaryPermissionError extends CcusageRunError {
+	override readonly name: string = 'CcusageBinaryPermissionError';
+	constructor(binaryPath: string, triedLabels: string[], stderr: string) {
+		super(
+			`ccusage รันไม่ได้: ไฟล์ native binary ไม่มีสิทธิ์รัน (execute) และแก้เองไม่ได้เพราะไฟล์เป็นของ root\n` +
+				`ไฟล์: ${binaryPath}\n` +
+				`สาเหตุ: แพ็กเกจ @ccusage/ccusage-* ส่งไฟล์มาแบบไม่มีบิต execute ตัว ccusage เลยพยายาม chmod +x ให้เองตอนรัน\n` +
+				`แต่ถ้าติดตั้งด้วย sudo ไฟล์จะเป็นของ root ผู้ใช้ธรรมดาจึง chmod ไม่ได้ (EPERM)\n` +
+				`วิธีแก้ (เลือกอย่างใดอย่างหนึ่ง):\n` +
+				`  1. ให้สิทธิ์รันกับไฟล์นั้นตรงๆ:\n` +
+				`     sudo chmod +x ${binaryPath}\n` +
+				`  2. ย้ายไปติดตั้ง global ใต้ home แทน จะไม่เจอปัญหานี้อีกเลย (ไม่ต้อง sudo):\n` +
+				`     npm config set prefix ~/.npm-global\n` +
+				`     echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc && source ~/.bashrc\n` +
+				`     npm i -g @ramath/ccusage-dashboard\n` +
+				`ลองมาแล้วทุกชั้น: ${triedLabels.join(' → ')}\n` +
+				`--- stderr จาก ccusage ---\n${tailLines(stderr) || '(ว่าง)'}`,
+			stderr,
+		);
+	}
+}
+
 /** ตัด stderr ให้สั้นพอจะอ่านได้ แต่ยังเห็นบรรทัดสุดท้ายที่มักเป็นสาเหตุจริง */
 function tailLines(text: string, maxLines = 20): string {
 	const lines = text.trimEnd().split('\n');
@@ -467,28 +545,44 @@ export interface CollectResult {
 	usedOfflineFallback: boolean;
 }
 
+/** ผลของการลอง binary หนึ่งชั้น — สำเร็จคืน report เลย ไม่สำเร็จคืน error ที่ "ยังไม่ throw" ให้ผู้เรียกตัดสินใจ */
+type AttemptOutcome =
+	| { ok: true; result: CollectResult }
+	| { ok: false; error: CcusageRunError; stderr: string };
+
 /**
- * รัน ccusage แล้วคืน report ที่ validate แล้ว
+ * ลอง binary หนึ่งชั้นให้จบกระบวนความ (รวม retry แบบ --offline)
  *
  * retry ด้วย `--offline` รอบสองเมื่อรอบแรกล้มเพราะเน็ต (PLAN §7):
  * ccusage ดึงตาราง pricing จากอินเทอร์เน็ต ถ้าเน็ตล่ม/อยู่หลัง proxy มันจะ exit != 0
  * ทั้งที่ log usage ในเครื่องอ่านได้ปกติ — การถอยไปใช้ราคาที่ cache ไว้
  * ให้ตัวเลขที่ใกล้เคียงพอใช้งาน ดีกว่าโชว์ error แล้วไม่ให้ดูอะไรเลย
+ *
+ * ฟังก์ชันนี้ไม่ throw error ของ exit != 0 เอง (แต่ปล่อย timeout ทะลุออกไป)
+ * เพราะ collect() ต้องได้เห็น stderr ก่อน ถึงจะรู้ว่าควรถอยไปชั้นถัดไปหรือรายงานจบตรงนี้
  */
-export async function collect(options: CollectOptions = {}): Promise<CollectResult> {
-	const spec = resolveCcusageBinary();
-	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-
+async function attemptWithBinary(
+	spec: BinarySpec,
+	options: CollectOptions,
+	timeoutMs: number,
+): Promise<AttemptOutcome> {
 	const first = await runOnce(spec, buildArgs(options), timeoutMs);
 	if (first.code === 0) {
 		return {
-			report: parseReport(first.stdout),
-			binary: spec.label,
-			usedOfflineFallback: Boolean(options.offline),
+			ok: true,
+			result: {
+				report: parseReport(first.stdout),
+				binary: spec.label,
+				usedOfflineFallback: Boolean(options.offline),
+			},
 		};
 	}
 
-	const canRetryOffline = !options.offline && looksLikeNetworkFailure(first.stderr);
+	// ไฟล์รันไม่ได้ตั้งแต่แรก → --offline ก็ไม่ช่วย (ปัญหาอยู่ที่สิทธิ์ไฟล์ ไม่ใช่เน็ต)
+	// เช็คก่อน looksLikeNetworkFailure เพื่อไม่เผารอบ spawn ทิ้งเปล่าๆ ก่อนถอยไปชั้นถัดไป
+	const canRetryOffline =
+		!options.offline && !findInexecutableBinaryPath(first.stderr) && looksLikeNetworkFailure(first.stderr);
+
 	if (canRetryOffline) {
 		// เพดานเวลาเป็น "ต่อการรันหนึ่งครั้ง" ไม่ใช่ยอดรวม — เคสนี้จึงรอได้ถึง 2×timeout
 		// ยอมรับได้เพราะรอบสองจะเกิดต่อเมื่อรอบแรก **จบแล้ว** ด้วย exit != 0 เท่านั้น
@@ -496,24 +590,89 @@ export async function collect(options: CollectOptions = {}): Promise<CollectResu
 		const second = await runOnce(spec, buildArgs({ ...options, offline: true }), timeoutMs);
 		if (second.code === 0) {
 			return {
-				report: parseReport(second.stdout),
-				binary: spec.label,
-				usedOfflineFallback: true,
+				ok: true,
+				result: {
+					report: parseReport(second.stdout),
+					binary: spec.label,
+					usedOfflineFallback: true,
+				},
 			};
 		}
 		// รอบ offline ก็ยังพัง — รายงาน stderr ของรอบ offline เพราะเป็นความพยายามล่าสุด
-		throw new CcusageRunError(
-			`ccusage ล้มเหลว (exit ${second.code}) ทั้งรอบปกติและรอบ --offline\n` +
-				`ใช้ binary: ${spec.label}\n` +
-				`--- stderr จาก ccusage ---\n${tailLines(second.stderr) || '(ว่าง)'}`,
-			second.stderr,
-		);
+		return {
+			ok: false,
+			stderr: second.stderr,
+			error: new CcusageRunError(
+				`ccusage ล้มเหลว (exit ${second.code}) ทั้งรอบปกติและรอบ --offline\n` +
+					`ใช้ binary: ${spec.label}\n` +
+					`--- stderr จาก ccusage ---\n${tailLines(second.stderr) || '(ว่าง)'}`,
+				second.stderr,
+			),
+		};
 	}
 
-	throw new CcusageRunError(
-		`ccusage จบด้วย exit code ${first.code}\n` +
-			`ใช้ binary: ${spec.label}\n` +
-			`--- stderr จาก ccusage ---\n${tailLines(first.stderr) || '(ว่าง)'}`,
-		first.stderr,
-	);
+	return {
+		ok: false,
+		stderr: first.stderr,
+		error: new CcusageRunError(
+			`ccusage จบด้วย exit code ${first.code}\n` +
+				`ใช้ binary: ${spec.label}\n` +
+				`--- stderr จาก ccusage ---\n${tailLines(first.stderr) || '(ว่าง)'}`,
+			first.stderr,
+		),
+	};
+}
+
+/**
+ * รัน ccusage ตามลำดับชั้นที่ให้มา แล้วคืน report ที่ validate แล้ว
+ *
+ * export แยกจาก collect() ไว้ให้เทสฉีด binary ปลอมเข้ามาได้ — พิสูจน์พฤติกรรม fallback
+ * ได้โดยไม่ต้องมี ccusage ตัวจริง ไม่แตะ ~/.claude และไม่ยิงเน็ต
+ *
+ * กติกาการถอยไปชั้นถัดไป: **เฉพาะ** error สิทธิ์รันไฟล์ (findInexecutableBinaryPath) เท่านั้น
+ * error อื่นรายงานทันทีที่ชั้นแรกที่พัง — เพราะชั้นถัดไปไม่มีเหตุผลให้เชื่อว่าจะดีกว่า
+ * และการลองซ้ำ (โดยเฉพาะชั้น npx ที่ต้องโหลดจากเน็ต) มีแต่ทำให้ user รอนานขึ้นก่อนเห็นสาเหตุจริง
+ */
+export async function collectWith(specs: BinarySpec[], options: CollectOptions = {}): Promise<CollectResult> {
+	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const tried: string[] = [];
+
+	/**
+	 * เก็บเคส "ไฟล์ไม่มีสิทธิ์รัน" ครั้งแรกไว้ เพราะถ้าชั้นถัดๆ ไปก็พังด้วย (เช่น npx ไม่มีเน็ต)
+	 * error ที่ควรโชว์คืออันนี้ ไม่ใช่ "npx ล้มเหลว" — path ที่ต้อง chmod อยู่ในอันนี้อันเดียว
+	 * และมันคือสิ่งเดียวที่ user แก้เองได้แบบถาวร
+	 */
+	let permissionFailure: { path: string; stderr: string } | undefined;
+	let lastError: CcusageRunError | undefined;
+
+	for (const spec of specs) {
+		tried.push(spec.label);
+
+		const outcome = await attemptWithBinary(spec, options, timeoutMs);
+		if (outcome.ok) return outcome.result;
+
+		lastError = outcome.error;
+
+		const inexecutablePath = findInexecutableBinaryPath(outcome.stderr);
+		if (!inexecutablePath) {
+			// error ธรรมดา — ไม่มีเหตุผลให้เชื่อว่าชั้นถัดไปจะรอด รายงานเลย อย่าให้ user รอฟรี
+			if (permissionFailure) break;
+			throw outcome.error;
+		}
+
+		permissionFailure ??= { path: inexecutablePath, stderr: outcome.stderr };
+		// ชั้นถัดไปติดตั้งลงที่ที่ user เป็นเจ้าของ (~/.npm/_npx) → chmod +x จะสำเร็จ จึงคุ้มที่จะลอง
+	}
+
+	if (permissionFailure) {
+		throw new CcusageBinaryPermissionError(permissionFailure.path, tried, permissionFailure.stderr);
+	}
+
+	// ถึงตรงนี้ได้ทางเดียวคือ specs ว่าง — ผู้เรียกส่ง list เปล่ามา (collect() ไม่มีทางเป็นแบบนั้น)
+	throw lastError ?? new CcusageRunError('ไม่มี binary ของ ccusage ให้ลองเลยสักตัว');
+}
+
+/** รัน ccusage จากชั้นที่หาเจอในเครื่องนี้ แล้วคืน report ที่ validate แล้ว */
+export async function collect(options: CollectOptions = {}): Promise<CollectResult> {
+	return collectWith(resolveCcusageBinaries(), options);
 }
