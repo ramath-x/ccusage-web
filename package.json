@@ -1,10 +1,10 @@
 {
-  "name": "ccusage-web",
-  "version": "0.0.1",
+  "name": "ccusage-dashboard",
+  "version": "0.1.0",
   "description": "ดู usage/cost ของ coding agent CLI เป็นหน้าเว็บ เสิร์ฟบน port ว่างอัตโนมัติ",
   "type": "module",
   "bin": {
-    "ccusage-web": "./dist/cli.js"
+    "ccusage-dashboard": "./dist/cli.js"
   },
   "main": "./dist/cli.js",
   "files": [

@@ -103,14 +103,14 @@ type Section = (typeof SECTIONS)[number];
 /**
  * ccusage schema เพี้ยนไปจากที่เราคาด
  * แยก error class ออกมาเพราะวิธีแก้ต่างกันสิ้นเชิงกับ error ตอน spawn:
- * อันนี้แปลว่า "อัปเดต ccusage-web" ไม่ใช่ "ติดตั้ง ccusage"
+ * อันนี้แปลว่า "อัปเดต ccusage-dashboard" ไม่ใช่ "ติดตั้ง ccusage"
  */
 export class CcusageSchemaError extends Error {
 	override readonly name = 'CcusageSchemaError';
 	constructor(detail: string) {
 		super(
 			`ccusage schema เปลี่ยนไปจากที่รองรับ: ${detail}\n` +
-				`วิธีแก้: อัปเดต ccusage-web เป็นเวอร์ชันล่าสุด (npm i -g ccusage-web@latest)\n` +
+				`วิธีแก้: อัปเดต ccusage-dashboard เป็นเวอร์ชันล่าสุด (npm i -g ccusage-dashboard@latest)\n` +
 				`ถ้ายังไม่หาย แจ้ง issue ที่ https://github.com/ramath-x/ccusage-web/issues พร้อมเวอร์ชัน ccusage ที่ใช้`,
 		);
 	}
@@ -143,7 +143,7 @@ function formatSeconds(ms: number): string {
  * สืบทอดจาก CcusageRunError เพื่อให้ตัวเรียกที่ catch error "ที่เรารู้จัก" อยู่แล้ว
  * (cli.ts / server.ts) พิมพ์ข้อความไทยให้เลยโดยไม่ต้องไล่เพิ่ม catch ทีละจุด
  * แต่แยก class ไว้เพราะวิธีแก้ของผู้ใช้ต่างกัน: อันนี้คือ "รอนานขึ้น" หรือ "ตัดเน็ตออกด้วย --offline"
- * ไม่ใช่ "ติดตั้ง ccusage" หรือ "อัปเดต ccusage-web"
+ * ไม่ใช่ "ติดตั้ง ccusage" หรือ "อัปเดต ccusage-dashboard"
  */
 export class CcusageTimeoutError extends CcusageRunError {
 	override readonly name: string = 'CcusageTimeoutError';
@@ -221,7 +221,7 @@ function findBundledCcusage(): string | undefined {
  * 2. dependency ที่ pin มากับเรา — schema ตรงกับที่ test ไว้แน่นอน และไม่ต้องแตะเน็ต
  *    รันผ่าน `node <entry>` ตรงๆ ไม่พึ่ง shim ใน .bin เพราะ package manager บางตัว
  *    (pnpm/yarn PnP หรือกรณีเราเป็น transitive dep) ไม่ได้สร้าง shim ไว้ให้
- * 3. `npx -y ccusage@latest` — ทางสุดท้าย ช้าและต้องมีเน็ต แต่ทำให้ `npx ccusage-web`
+ * 3. `npx -y ccusage@latest` — ทางสุดท้าย ช้าและต้องมีเน็ต แต่ทำให้ `npx ccusage-dashboard`
  *    ยังทำงานได้แม้ dependency หายไป
  */
 export function resolveCcusageBinary(): BinarySpec {
@@ -326,7 +326,7 @@ export function runOnce(
 				reject(
 					new CcusageRunError(
 						`หา ccusage ไม่เจอ (ลองแล้ว: ${spec.label})\n` +
-							`วิธีแก้: ติดตั้งด้วย \`npm i -g ccusage\` หรือรัน ccusage-web ผ่าน npx เพื่อให้ดึง ccusage มาให้อัตโนมัติ`,
+							`วิธีแก้: ติดตั้งด้วย \`npm i -g ccusage\` หรือรัน ccusage-dashboard ผ่าน npx เพื่อให้ดึง ccusage มาให้อัตโนมัติ`,
 					),
 				);
 				return;

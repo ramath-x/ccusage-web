@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * entry point ของ ccusage-web
+ * entry point ของ ccusage-dashboard
  *
  * มีสองโหมด:
  *   • ไม่ใส่ --json → เก็บข้อมูลแล้วยิง web server บน port ว่าง + เปิด browser (โหมดหลัก)
@@ -14,11 +14,11 @@ import { startServer, ServerStartError } from './server.js';
 import { openBrowser } from './open.js';
 import { buildPayload, buildView, type ScopeInput, type Snapshot } from './snapshot.js';
 
-const HELP = `ccusage-web — ดู usage/cost ของ coding agent CLI เป็นหน้าเว็บ
+const HELP = `ccusage-dashboard — ดู usage/cost ของ coding agent CLI เป็นหน้าเว็บ
 
 การใช้งาน:
-  ccusage-web [options]            เก็บข้อมูลแล้วเปิดหน้าเว็บบน port ว่างอัตโนมัติ
-  ccusage-web --json [options]     พ่น JSON ที่จัดกลุ่มตามโปรเจกต์แล้วออก stdout (ไม่ยิง server)
+  ccusage-dashboard [options]            เก็บข้อมูลแล้วเปิดหน้าเว็บบน port ว่างอัตโนมัติ
+  ccusage-dashboard --json [options]     พ่น JSON ที่จัดกลุ่มตามโปรเจกต์แล้วออก stdout (ไม่ยิง server)
 
 Options:
   -j, --json               พ่น JSON ออก stdout แทนการเปิดหน้าเว็บ
@@ -33,7 +33,7 @@ Options:
   -O, --offline            ใช้ตาราง pricing ที่ cache ไว้ ไม่ต้องต่อเน็ต
   -h, --help               แสดงข้อความนี้
 
-หมายเหตุ: ตัวเลขทั้งหมดมาจาก ccusage โดยตรง — ccusage-web ไม่ได้คำนวณราคาเอง
+หมายเหตุ: ตัวเลขทั้งหมดมาจาก ccusage โดยตรง — ccusage-dashboard ไม่ได้คำนวณราคาเอง
           หน้าเว็บเปิดที่ 127.0.0.1 เท่านั้น ไม่เปิดออกนอกเครื่อง
 `;
 
@@ -161,7 +161,7 @@ async function main(): Promise<number> {
 		if (!report.scope.matched) {
 			process.stderr.write(
 				`ไม่พบข้อมูล usage ของ ${report.scope.resolvedPath} — โฟลเดอร์นี้อาจยังไม่เคยใช้ Claude Code\n` +
-					`ลองดูทั้งเครื่องด้วย: ccusage-web --json --all\n`,
+					`ลองดูทั้งเครื่องด้วย: ccusage-dashboard --json --all\n`,
 			);
 		}
 		for (const warning of report.meta.warnings) {
@@ -189,7 +189,7 @@ async function main(): Promise<number> {
 	}
 
 	process.stdout.write(
-		`\n  ccusage-web พร้อมใช้งานแล้ว\n\n` +
+		`\n  ccusage-dashboard พร้อมใช้งานแล้ว\n\n` +
 			`  ${running.url}\n\n` +
 			`  ขอบเขต: ${report.scope.mode === 'all' ? 'ทั้งเครื่อง' : (report.scope.resolvedPath ?? '')}\n` +
 			`  ปิดด้วย Ctrl+C\n\n`,

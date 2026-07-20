@@ -319,7 +319,7 @@ function renderEmptyState(data: PageData): string {
 		'หรือใช้ผ่าน agent ที่ระบุโปรเจกต์ไม่ได้ (ดูหัวข้อ "ระบุโปรเจกต์ไม่ได้" ด้านล่าง)</p>' +
 		`<p style="margin-top:12px"><a class="btn" href="${escapeHtml(href)}">ดูทั้งเครื่องแทน</a></p>` +
 		// บอกทางฝั่งเทอร์มินัลไว้ด้วย สำหรับคนที่เปิดหน้านี้ค้างแล้วอยากรันใหม่ให้ default เป็นทั้งเครื่อง
-		'<p class="muted" style="margin-top:8px">หรือรันใหม่ด้วย <code>ccusage-web --all</code></p></section>'
+		'<p class="muted" style="margin-top:8px">หรือรันใหม่ด้วย <code>ccusage-dashboard --all</code></p></section>'
 	);
 }
 
@@ -601,14 +601,14 @@ export function renderPage(data: PageData): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ccusage-web — ${escapeHtml(scopeTitle(report))}</title>
+<title>ccusage-dashboard — ${escapeHtml(scopeTitle(report))}</title>
 <style>${CSS}</style>
 </head>
 <body>
 <div class="wrap">
 	<header class="page-head">
 		<div>
-			<h1>ccusage-web</h1>
+			<h1>ccusage-dashboard</h1>
 			<div class="meta">
 				${scopeBadge}
 				<span class="scope-path">${escapeHtml(scopeTitle(report))}</span>
@@ -634,7 +634,7 @@ export function renderPage(data: PageData): string {
 	${renderUnmapped(report)}
 
 	<footer>
-		<div>ตัวเลขทั้งหมดมาจาก <strong>ccusage</strong> โดยตรง — ccusage-web ไม่ได้คำนวณราคาเอง</div>
+		<div>ตัวเลขทั้งหมดมาจาก <strong>ccusage</strong> โดยตรง — ccusage-dashboard ไม่ได้คำนวณราคาเอง</div>
 		<div>binary ที่ใช้: <code>${escapeHtml(data.binary)}</code></div>
 		<div>เก็บข้อมูลเมื่อ ${timeTag(data.collectedAt)} · สร้าง report เมื่อ ${timeTag(report.generatedAt)}</div>
 		<div>ข้อมูลดิบแบบเต็ม: <a href="/api/report">/api/report</a></div>

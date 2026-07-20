@@ -200,7 +200,7 @@ export function createRequestHandler(store: SnapshotStore): http.RequestListener
 				return;
 			}
 			// รับ ?scope= / ?project= เหมือนหน้าเว็บ เพื่อให้ JSON กับหน้าที่ผู้ใช้กำลังดูตรงกันเสมอ
-			// และคืน **โครงเดียวกับ `ccusage-web --json`** เป๊ะ (ดูเหตุผลการเลือกโครงที่ buildPayload)
+			// และคืน **โครงเดียวกับ `ccusage-dashboard --json`** เป๊ะ (ดูเหตุผลการเลือกโครงที่ buildPayload)
 			sendJson(res, 200, buildPayload(viewFor()), headOnly);
 			return;
 		}

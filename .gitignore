@@ -3,3 +3,5 @@ dist/
 *.log
 .DS_Store
 .env
+# tarball ที่ `npm pack` สร้างตอนตรวจก่อน publish — เป็นของชั่วคราว ไม่ใช่ source
+*.tgz

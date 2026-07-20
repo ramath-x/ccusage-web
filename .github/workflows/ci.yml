@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      # ทดสอบขอบล่างของ engines (node 20) และเวอร์ชันที่คนส่วนใหญ่ใช้จริง
+      # ถ้าขอบล่างพัง แปลว่า engines ใน package.json โกหก ต้องรู้ตั้งแต่ตอน PR
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: typecheck
+        run: npx tsc --noEmit
+
+      # เทสทุกเคสต้องอ่านจาก test/fixtures เท่านั้น ห้ามแตะ ~/.claude ของเครื่องที่รัน —
+      # runner ของ GitHub ไม่มีโฟลเดอร์นั้นอยู่แล้ว ถ้าเทสไหนแอบพึ่งมันจะพังที่ step นี้
+      - name: test
+        run: npm test
