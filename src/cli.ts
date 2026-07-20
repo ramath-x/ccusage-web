@@ -2,21 +2,25 @@
 /**
  * entry point ของ ccusage-web
  *
- * รอบนี้ (M1) รองรับแค่โหมด --json คือดูดข้อมูลจาก ccusage แล้วพ่นออก stdout
+ * รอบนี้ (M2) รองรับแค่โหมด --json คือดูดข้อมูลจาก ccusage → join กับ project index
+ * แล้วพ่น report ที่จัดกลุ่มตามโปรเจกต์ออก stdout
  * โหมด server/HTML ยังไม่ทำ — ดู PLAN.md M3
  */
 
 import { parseArgs } from 'node:util';
 import { collect, CcusageRunError, CcusageSchemaError } from './ccusage.js';
+import { buildProjectIndex } from './projects.js';
+import { buildReport } from './report.js';
 
 const HELP = `ccusage-web — ดู usage/cost ของ coding agent CLI เป็นหน้าเว็บ
 
 การใช้งาน:
-  ccusage-web --json [options]     พ่น JSON ที่ดูดจาก ccusage ออก stdout
+  ccusage-web --json [options]     พ่น JSON ที่จัดกลุ่มตามโปรเจกต์แล้วออก stdout
 
 Options:
   -j, --json               พ่น JSON ออก stdout (รอบนี้บังคับใส่ — โหมดเว็บยังไม่พร้อม)
       --all                ดูข้อมูลทั้งเครื่อง ทุกโปรเจกต์ ทุก agent
+  -p, --project <path>     ดูเฉพาะโปรเจกต์ที่ path นี้ (ไม่ใส่ = โฟลเดอร์ปัจจุบัน)
   -s, --since <YYYY-MM-DD> กรองตั้งแต่วันที่
   -u, --until <YYYY-MM-DD> กรองถึงวันที่ (รวมวันนั้น)
   -z, --timezone <IANA>    timezone ที่ใช้จัดกลุ่มวัน เช่น Asia/Bangkok
@@ -34,6 +38,7 @@ async function main(): Promise<number> {
 			options: {
 				json: { type: 'boolean', short: 'j', default: false },
 				all: { type: 'boolean', default: false },
+				project: { type: 'string', short: 'p' },
 				since: { type: 'string', short: 's' },
 				until: { type: 'string', short: 'u' },
 				timezone: { type: 'string', short: 'z' },
@@ -66,6 +71,12 @@ async function main(): Promise<number> {
 		return 2;
 	}
 
+	// สองอันนี้ขัดกันตรงๆ — เดาให้ว่าอันไหนชนะ = user อาจอ่านตัวเลขผิดขอบเขตโดยไม่รู้ตัว
+	if (opts.all && opts.project !== undefined) {
+		process.stderr.write(`ใช้ --all พร้อมกับ --project ไม่ได้ — เลือกอย่างใดอย่างหนึ่ง\n`);
+		return 2;
+	}
+
 	const result = await collect({
 		...(opts.since ? { since: opts.since } : {}),
 		...(opts.until ? { until: opts.until } : {}),
@@ -73,9 +84,26 @@ async function main(): Promise<number> {
 		offline: opts.offline,
 	});
 
-	// --all ยังไม่เปลี่ยนพฤติกรรมของ collector: ccusage คืนข้อมูลทั้งเครื่องอยู่แล้ว
-	// การกรองเฉพาะโปรเจกต์ต้องรอ project index (PLAN M2) — รับ flag ไว้ก่อนเพื่อไม่ให้ error
-	process.stdout.write(JSON.stringify(result.report, null, 2) + '\n');
+	// ccusage คืนข้อมูลทั้งเครื่องเสมอ — การกรองต่อโปรเจกต์เกิดที่ชั้นนี้ ไม่ใช่ที่ collector
+	const index = await buildProjectIndex();
+
+	// default = โฟลเดอร์ปัจจุบัน เพราะ use case หลักคือ "cd เข้ามาแล้วอยากรู้ว่าโปรเจกต์นี้กินไปเท่าไหร่"
+	const report = buildReport(result.report.session, index, {
+		scope: opts.all ? { mode: 'all' } : { mode: 'project', targetPath: opts.project ?? process.cwd() },
+	});
+
+	process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+
+	// เขียนลง stderr เพื่อไม่ให้ปนกับ JSON ตอน redirect เข้าไฟล์
+	if (!report.scope.matched) {
+		process.stderr.write(
+			`ไม่พบข้อมูล usage ของ ${report.scope.resolvedPath} — โฟลเดอร์นี้อาจยังไม่เคยใช้ Claude Code\n` +
+				`ลองดูทั้งเครื่องด้วย: ccusage-web --json --all\n`,
+		);
+	}
+	for (const warning of report.meta.warnings) {
+		process.stderr.write(`คำเตือน: ${warning}\n`);
+	}
 
 	if (result.usedOfflineFallback && !opts.offline) {
 		// เขียนลง stderr ไม่ใช่ stdout เพื่อไม่ให้ไปปนกับ JSON ตอน user redirect เข้าไฟล์
