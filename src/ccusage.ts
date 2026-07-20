@@ -71,7 +71,30 @@ export interface CollectOptions {
 	until?: string;
 	timezone?: string;
 	offline?: boolean;
+	/** เวลาสูงสุดที่ยอมให้ ccusage รัน (มิลลิวินาที) — ไม่ใส่ = DEFAULT_TIMEOUT_MS */
+	timeoutMs?: number;
 }
+
+/**
+ * เพดานเวลาของการรัน ccusage หนึ่งครั้ง
+ *
+ * ที่มาของตัวเลข — วัดบนเครื่องนี้ (2026-07-20, log จริง 155 session / 32 วัน):
+ *   • ccusage ตัวเดียวโดดๆ (bundled dependency)        ~1.0-1.2 วิ
+ *   • collect() ครบวงจร (spawn + สแกน ~/.claude)       ~1.3-1.5 วิ
+ *   • fallback ชั้น 3 `npx -y ccusage@latest` (cache เปล่า) ~2.2 วิ
+ * เลือก 60 วิ = ~27 เท่าของเคสที่ช้าที่สุดที่วัดได้ เผื่อเครื่องช้า/เน็ตอืด/log ใหญ่กว่านี้มาก
+ * โดยยังไม่ทำให้ปุ่ม Refresh บนหน้าเว็บค้างจนผู้ใช้คิดว่าโปรแกรมตาย
+ *
+ * ทำไมต้องมีเพดานตั้งแต่แรก: ไม่มี timeout = ถ้า ccusage ค้าง (โดยเฉพาะชั้น npx ที่รอเน็ต)
+ * เราค้างตามแบบไม่มีทางออก — บน CLI ยังกด Ctrl+C ได้ แต่บนหน้าเว็บผู้ใช้เห็นแค่ปุ่มหมุนค้าง
+ */
+export const DEFAULT_TIMEOUT_MS = 60_000;
+
+/**
+ * เวลาที่ให้ child เก็บของหลังส่ง SIGTERM ก่อนจะ SIGKILL ทิ้ง
+ * สั้นได้เพราะ ccusage ไม่มี state ที่ต้อง flush — เผื่อไว้แค่ให้มันปิด stream ตัวเอง
+ */
+const KILL_GRACE_MS = 2_000;
 
 /** section ที่เราขอมาในการ spawn ครั้งเดียว */
 const SECTIONS = ['daily', 'weekly', 'monthly', 'session'] as const;
@@ -95,12 +118,49 @@ export class CcusageSchemaError extends Error {
 
 /** รัน ccusage ไม่สำเร็จ (หา binary ไม่เจอ / exit != 0) */
 export class CcusageRunError extends Error {
-	override readonly name = 'CcusageRunError';
+	override readonly name: string = 'CcusageRunError';
 	constructor(
 		message: string,
 		readonly stderr = '',
 	) {
 		super(message);
+	}
+}
+
+/**
+ * แปลงมิลลิวินาทีเป็นวินาทีที่อ่านรู้เรื่อง
+ * ค่าต่ำกว่า 1 วินาที (เจอตอนเทสหรือตอน user ตั้ง --timeout เล็กๆ) ต้องไม่ถูกปัดจนเพี้ยน
+ * เช่น 50ms ต้องได้ "0.05" ไม่ใช่ "0.1" — ไม่งั้น error โกหกว่าเราให้เวลามากกว่าที่ให้จริง
+ */
+function formatSeconds(ms: number): string {
+	const seconds = ms / 1000;
+	return seconds >= 1 ? String(Math.round(seconds * 10) / 10) : String(Number(seconds.toPrecision(2)));
+}
+
+/**
+ * ccusage รันนานเกินเพดานจนถูก kill
+ *
+ * สืบทอดจาก CcusageRunError เพื่อให้ตัวเรียกที่ catch error "ที่เรารู้จัก" อยู่แล้ว
+ * (cli.ts / server.ts) พิมพ์ข้อความไทยให้เลยโดยไม่ต้องไล่เพิ่ม catch ทีละจุด
+ * แต่แยก class ไว้เพราะวิธีแก้ของผู้ใช้ต่างกัน: อันนี้คือ "รอนานขึ้น" หรือ "ตัดเน็ตออกด้วย --offline"
+ * ไม่ใช่ "ติดตั้ง ccusage" หรือ "อัปเดต ccusage-web"
+ */
+export class CcusageTimeoutError extends CcusageRunError {
+	override readonly name: string = 'CcusageTimeoutError';
+	constructor(
+		readonly timeoutMs: number,
+		label: string,
+		stderr = '',
+	) {
+		super(
+			`ccusage ใช้เวลาเกิน ${formatSeconds(timeoutMs)} วินาที จึงถูกยกเลิก\n` +
+				`ใช้ binary: ${label}\n` +
+				`วิธีแก้:\n` +
+				`  • ถ้าค้างตอนดึงตารางราคาจากเน็ต ลองใส่ --offline เพื่อใช้ราคาที่ cache ไว้\n` +
+				`  • ถ้าข้อมูล log เยอะจริงและต้องใช้เวลานาน เพิ่มเพดานด้วย --timeout <วินาที>` +
+				(stderr.trim() ? `\n--- stderr ที่ได้ก่อนถูกยกเลิก ---\n${stderr.trim()}` : ''),
+			stderr,
+		);
 	}
 }
 
@@ -203,7 +263,17 @@ interface SpawnResult {
 	stderr: string;
 }
 
-function runOnce(spec: BinarySpec, args: string[]): Promise<SpawnResult> {
+/**
+ * รัน ccusage หนึ่งครั้งพร้อมเพดานเวลา
+ *
+ * export ไว้ให้เทสเรียกตรงด้วย binary ปลอมที่จงใจค้าง — พิสูจน์ว่า timeout ทำงานจริง
+ * โดยไม่ต้องพึ่ง ccusage ตัวจริงหรือแตะ ~/.claude
+ */
+export function runOnce(
+	spec: BinarySpec,
+	args: string[],
+	timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<SpawnResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(spec.command, [...spec.baseArgs, ...args], {
 			// ไม่ใช้ shell:true — args มาจาก user (--since/--timezone) จะกลายเป็น shell injection
@@ -213,6 +283,31 @@ function runOnce(spec: BinarySpec, args: string[]): Promise<SpawnResult> {
 
 		let stdout = '';
 		let stderr = '';
+		let settled = false;
+		let killTimer: NodeJS.Timeout | undefined;
+
+		/**
+		 * timer ต้องถูกเคลียร์ทุกทางออก ไม่งั้น process ของเราจะไม่ยอมจบ
+		 * (timer ที่ยัง active นับเป็นงานค้างใน event loop) — โหมด --json จะแขวนหลังพิมพ์ JSON เสร็จ
+		 */
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+
+			// SIGTERM ก่อนเพื่อให้โอกาสปิด stream ตัวเอง แล้วค่อย SIGKILL ถ้าไม่ยอมตาย
+			// ต้องฆ่าให้ตายจริง ไม่งั้น child ที่ค้างจะยึด CPU/เน็ตต่อไปหลังเราคืน error ไปแล้ว
+			child.kill('SIGTERM');
+			killTimer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
+			killTimer.unref();
+
+			reject(new CcusageTimeoutError(timeoutMs, spec.label, stderr));
+		}, timeoutMs);
+
+		const cleanup = (): void => {
+			clearTimeout(timer);
+			if (killTimer) clearTimeout(killTimer);
+		};
+
 		child.stdout.setEncoding('utf8');
 		child.stderr.setEncoding('utf8');
 		child.stdout.on('data', (chunk: string) => {
@@ -223,6 +318,10 @@ function runOnce(spec: BinarySpec, args: string[]): Promise<SpawnResult> {
 		});
 
 		child.on('error', (err: NodeJS.ErrnoException) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+
 			if (err.code === 'ENOENT') {
 				reject(
 					new CcusageRunError(
@@ -236,6 +335,13 @@ function runOnce(spec: BinarySpec, args: string[]): Promise<SpawnResult> {
 		});
 
 		child.on('close', (code) => {
+			// ถึงตรงนี้หลัง timeout ได้ (คือ child ตายเพราะโดนเรา kill) — reject ไปแล้ว ห้าม resolve ทับ
+			if (settled) {
+				cleanup();
+				return;
+			}
+			settled = true;
+			cleanup();
 			resolve({ code, stdout, stderr });
 		});
 	});
@@ -371,8 +477,9 @@ export interface CollectResult {
  */
 export async function collect(options: CollectOptions = {}): Promise<CollectResult> {
 	const spec = resolveCcusageBinary();
+	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-	const first = await runOnce(spec, buildArgs(options));
+	const first = await runOnce(spec, buildArgs(options), timeoutMs);
 	if (first.code === 0) {
 		return {
 			report: parseReport(first.stdout),
@@ -383,7 +490,10 @@ export async function collect(options: CollectOptions = {}): Promise<CollectResu
 
 	const canRetryOffline = !options.offline && looksLikeNetworkFailure(first.stderr);
 	if (canRetryOffline) {
-		const second = await runOnce(spec, buildArgs({ ...options, offline: true }));
+		// เพดานเวลาเป็น "ต่อการรันหนึ่งครั้ง" ไม่ใช่ยอดรวม — เคสนี้จึงรอได้ถึง 2×timeout
+		// ยอมรับได้เพราะรอบสองจะเกิดต่อเมื่อรอบแรก **จบแล้ว** ด้วย exit != 0 เท่านั้น
+		// (ถ้ารอบแรก timeout จะ throw ออกไปเลย ไม่ retry — ผู้ใช้ที่รอค้างต้องได้คำตอบตามเวลาที่ตั้งไว้)
+		const second = await runOnce(spec, buildArgs({ ...options, offline: true }), timeoutMs);
 		if (second.code === 0) {
 			return {
 				report: parseReport(second.stdout),
